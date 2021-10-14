@@ -1,0 +1,201 @@
+from PSPApp import *
+import struct, sys
+
+def ScriptProperties():
+    return {
+        'Author': u'',
+        'Copyright': u'',
+        'Description': u'',
+        'Host': u'PaintShop Pro',
+        'Host Version': u'19.00'
+        }
+
+class Gradient_Reader:
+    _header = ">4sHH"
+    _namelen = ">B"
+    _namestring = ">{}p"
+    _numstops = ">H"
+    _colorStop = ">IIH6BHH"
+    _transStop = ">IIH"
+    _end = ">6B"
+    _offset = 0
+    _signature = ""
+    _version = ""
+    _numGradients = ""
+    _cStops = []
+    _tStops = []
+    _name = ""
+    
+    def __init__(self, filename):
+        #read entire file
+        file = open(filename, 'rb')
+        buff = file.read()
+        file.clos()
+        #Grab header
+        self._signature, self._version, self._numGradients = struct.unpack(self._header, buff[self._offset:self._offset + struct.calcsize(self._header)])
+        self._offset = struct.calcsize(self._header)
+        #Grab Name
+        var = struct.unpack(self._namelen, buff[self._offset:self._offset+1])[0]+1
+        self._name = struct.unpack(self._namestring.format(var), buff[self._offset:self._offset + struct.calcsize(self._namestring.format(var))])[0].replace('\x00' , '')
+        self._offset = self._offset + struct.calcsize(self._namestring.format(var))
+        #Grab Color Stops
+        var = struct.unpack(self._numstops, buff[self._offset:self._offset + struct.calcsize(self._numstops)])[0]
+        self._offset = self._offset + struct.calcsize(self._numstops)
+        for i in range(var):
+            print struct.unpack(self._colorStop, buff[self._offset: self._offset+struct.calcsize(self._colorStop)])
+            loc,mid,model, R,R, G,G, B,B, A, type = struct.unpack(self._colorStop, buff[self._offset: self._offset+struct.calcsize(self._colorStop)])
+            self._cStops.append(cStop(loc, mid, model, [R,G,B],type))
+            self._offset = self._offset + struct.calcsize(self._colorStop)
+        #Grab Transparency Stops
+        var = struct.unpack(self._numstops, buff[self._offset:self._offset + struct.calcsize(self._numstops)])[0]
+        self._offset = self._offset + struct.calcsize(self._numstops)
+        for i in range(var):
+            loc,mid,opacity = struct.unpack(self._transStop, buff[self._offset: self._offset+struct.calcsize(self._transStop)])
+            self._tStops.append(tStop(loc, mid, opacity))
+            self._offset = self._offset + struct.calcsize(self._transStop)
+        #finish end of file
+        self._offset = self._offset + struct.calcsize(self._end)
+        
+    def getColorStops(self):
+        stops = []
+        for i in self._cStops:
+            stops.append({
+                'Color': i.getColor(),
+                'Location': i.getLocation(),
+                'Midpoint': i.getMidpoint()})
+        return stops
+
+    def getTransStops(self):
+        stops = []
+        for i in self._tStops:
+            stops.append({
+                'Level': i.getOpacity(),
+                'Location': i.getLocation(),
+                'Midpoint': i.getMidpoint()})
+        return stops
+        
+    def getMaterial(self):
+        return {
+        'IsPrimary': True, 
+        'NewMaterial': {
+            'Color': None, 
+            'Pattern': None, 
+            'Gradient': {
+                'Name': self._name, 
+                'ColorStops': self.getColorStops(), 
+                'TransparencyStops': self.getTransStops(), 
+                }, 
+            'Texture': None, 
+            'Art': None
+            }
+        }
+
+class Gradient_writer:
+    _header = ">4sHH"
+    _namelen = ">B"
+    _namestring = ">{}p"
+    _numstops = ">H"
+    _colorStop = ">IIH6BHH"
+    _transStop = ">IIH"
+    _end = ">6x"
+    _cStops = []
+    _tStops = []
+    _name = ""
+    _filename = ""
+    
+    def __init__(self, filename, name):
+        self._filename = filename
+        self._name = name
+    
+    def addColorStop(self, RGB, Location, Midpoint=50, type=0, LocPerc=False):
+        if LocPerc:
+            Location = round((Location /100.0) * 4096)
+        self._cStops.append(cStop(Location, Midpoint, 0, RGB, type))
+        
+    def addTransparencyStop(self, Opacity, Location, Midpoint=50, LocPerc=False):
+        if LocPerc:
+            Location = round((Location /100.0) * 4096)
+        Opacity = round((Opacity/100.0)*255)
+        self._tStops.append(tStop(Location, Midpoint, Opacity))        
+        
+    def write(self):
+        #Write File
+        buff = ''
+        #Create header
+        buff = buff + struct.pack(self._header, '8BGR', 3, 1)
+        #Grab Name
+        #buff = buff + struct.pack(self._namelen, len(self._name))
+        buff = buff + struct.pack(self._namestring.format(len(self._name)+1), self._name)
+        #Grab Color Stops
+        buff = buff + struct.pack(self._numstops, len(self._cStops))
+        for i in self._cStops:
+            buff = buff + struct.pack(self._colorStop, i._offset, i._midpoint, 0, i._colors[0],i._colors[0],i._colors[1],i._colors[1],i._colors[2],i._colors[2],0, i._type)
+        #Grab Transparency Stops
+        if len(self._tStops) == 0:
+            buff = buff + struct.pack(self._numstops, 2)
+            buff = buff + struct.pack(self._transStop, 0, 50, 100)
+            buff = buff + struct.pack(self._transStop, 4096, 50, 100)
+        else:
+            buff = buff + struct.pack(self._numstops, len(self._tStops))
+            for i in self._tStops:
+                buff = buff + struct.pack(self._transStop, i._offset, i._midpoint, i._opacity)
+        #finish end of file
+        buff = buff + struct.pack(self._end)
+        file = open(self._filename, 'wb')
+        file.write(buff)
+        file.close()
+        
+class cStop:
+    _offset = 0
+    _midpoint = 0
+    _model = 0
+    _colors = []
+    _type = 0
+    
+    def __init__(self, offset, midpoint, model, colors, type):
+        self._offset = offset
+        self._midpoint = midpoint
+        self._model = model
+        self._colors = colors
+        self._type = type
+
+    def __str__(self):
+        return self._name
+        
+    def getLocation(self):
+        return round((self._offset/4096.0),2)
+    
+    def getMidpoint(self):
+        return round(self._midpoint/100.0,2)
+
+    def getColor(self):
+        return (self._colors[0],self._colors[1],self._colors[2])
+        
+class tStop:
+    _offset = 0
+    _midpoint = 0
+    _opacity = 0
+    
+    def __init__(self, offset, midpoint, opacity):
+        self._offset = offset
+        self._midpoint = midpoint
+        self._opacity = opacity
+        
+    def getLocation(self):
+        return round((self._offset/4096.0),2)
+    
+    def getMidpoint(self):
+        return round(self._midpoint/100.0,2)
+    
+    def getOpacity(self):
+        return round(self._opacity/255.0,2) * 100
+
+def Do(Environment):
+    grd = Gradient_Reader(filename)
+    print grd.getMateial()
+    grd2 = Gradient_writer(filename, 'GradientName')
+    grd2.addColorStop((255,0,0), 0)
+    grd2.addColorStop((255,255,0),100, LocPerc=True)
+    grd2.addTransparencyStop(100,0)
+    grd2.addTransparencyStop(100,100, LocPerc=True)
+    grd2.write()
